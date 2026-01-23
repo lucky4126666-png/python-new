@@ -136,4 +136,6 @@ app.add_handler(CommandHandler("cn", set_lang_cn))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 print("🤖 BOT RUNNING...")
-app.run_polling()
+if __name__ == "__main__":
+    app.run_polling()
+
