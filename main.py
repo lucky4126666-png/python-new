@@ -1,212 +1,139 @@
-import os
+from telegram import Update
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, ContextTypes, filters
 from datetime import datetime
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+import pytz
+import re
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+BOT_TOKEN = "YOUR_BOT_TOKEN"
 
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN missing")
+TZ_VN = pytz.timezone("Asia/Ho_Chi_Minh")
 
-# ===== MENU =====
-MAIN_MENU = ReplyKeyboardMarkup(
-    [
-        ["🧮 Máy tính"],
-        ["💱 Tỷ giá", "💰 Phí %"],
-        ["🇻🇳 VN", "🇨🇳 CN"],
-        ["❌ Đóng"],
-    ],
-    resize_keyboard=True,
-)
-
-# ===== DATA THEO GROUP =====
-GROUPS = {}  # chat_id -> state
-
-
-def is_admin(update: Update) -> bool:
-    uid = update.effective_user.id
-    if uid == OWNER_ID:
-        return True
-    try:
-        m = update.effective_chat.get_member(uid)
-        return m.status in ("administrator", "creator")
-    except:
-        return False
-
+# ====== DATA ======
+group_data = {}
 
 def get_group(chat_id):
-    if chat_id not in GROUPS:
-        GROUPS[chat_id] = {
+    if chat_id not in group_data:
+        group_data[chat_id] = {
             "rate": None,
-            "fee": 0.0,
             "lang": "VN",
-            "mode": None,  # rate | fee | None
-            "rows": [],  # list of numbers (+ / -)
+            "logs": [],
+            "income": 0.0,
+            "expense": 0.0
         }
-    return GROUPS[chat_id]
+    return group_data[chat_id]
 
+# ====== FORMAT BILL ======
+def render_bill(chat_id, user):
+    g = group_data[chat_id]
+    now = datetime.now(TZ_VN).strftime("%d/%m/%Y – %H:%M")
 
-# ===== START =====
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        return
-    await update.message.reply_text(
-        "🤖 BOT TÍNH BILL NHÓM", reply_markup=MAIN_MENU
-    )
+    if g["lang"] == "CN":
+        header = f"""🧾 账单
 
+👤 创建者: {user}
+🕒 时间: {now}
 
-# ===== HANDLE MENU & TEXT =====
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        return
+⸻⸻⸻⸻⸻
+"""
+        empty = "📭 尚未发生任何交易\n"
+        footer = f"""
+⸻⸻⸻⸻⸻
+📥 总收入: {g['income']} USDT
+📤 总支出: {g['expense']} USDT
+💰 余额: **{g['income'] - g['expense']} USDT**
+"""
+    else:
+        header = f"""🧾 HÓA ĐƠN
 
+👤 Người tạo: {user}
+🕒 Thời gian: {now}
+
+⸻⸻⸻⸻⸻
+"""
+        empty = "📭 Chưa có giao dịch nào được thực hiện\n"
+        footer = f"""
+⸻⸻⸻⸻⸻
+📥 Tổng thu: {g['income']} USDT
+📤 Tổng chi: {g['expense']} USDT
+💰 Số dư: **{g['income'] - g['expense']} USDT**
+"""
+
+    body = ""
+    if not g["logs"]:
+        body = empty
+    else:
+        body = "\n".join(g["logs"]) + "\n"
+
+    return header + body + footer
+
+# ====== MESSAGE HANDLER ======
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+    user = update.effective_user.first_name
     text = update.message.text.strip()
+
     g = get_group(chat_id)
 
-    if text == "🧮 Máy tính":
-        g["mode"] = None
-        await update.message.reply_text("Nhập + / - để cộng trừ", reply_markup=MAIN_MENU)
-
-    elif text == "💱 Tỷ giá":
-        g["mode"] = "rate"
-        await update.message.reply_text("Nhập tỷ giá")
-
-    elif text == "💰 Phí %":
-        g["mode"] = "fee"
-        await update.message.reply_text("Nhập phí (%)")
-
-    elif text == "🇻🇳 VN":
-        g["lang"] = "VN"
-        await update.message.reply_text("Đã chuyển ngôn ngữ: VN")
-
-    elif text == "🇨🇳 CN":
-        g["lang"] = "CN"
-        await update.message.reply_text("已切换语言：中文")
-
-    elif text == "❌ Đóng":
-        await update.message.reply_text("Đã đóng menu")
-
-    else:
-        await handle_number(update, g)
-
-
-# ===== HANDLE NUMBER INPUT =====
-async def handle_number(update: Update, g):
-    raw = update.message.text.replace(",", "").strip()
-
-    # set rate
-    if g["mode"] == "rate":
-        try:
-            g["rate"] = float(raw)
-            g["mode"] = None
-            await update.message.reply_text(f"✅ Đã đặt tỷ giá: {g['rate']}")
-        except:
-            await update.message.reply_text("❌ Tỷ giá không hợp lệ")
+    # ---- SET RATE ----
+    if re.fullmatch(r"\d+(\.\d+)?", text):
+        g["rate"] = float(text)
+        await update.message.reply_text(
+            "✅ Đã đặt tỷ giá" if g["lang"] == "VN" else "✅ 已设置汇率"
+        )
         return
 
-    # set fee
-    if g["mode"] == "fee":
-        try:
-            g["fee"] = float(raw)
-            g["mode"] = None
-            await update.message.reply_text(f"✅ Đã đặt phí: {g['fee']}%")
-            await render_bill(update, g)
-        except:
-            await update.message.reply_text("❌ Phí không hợp lệ")
+    # ---- RESET ----
+    if text in ["+0", "-0"]:
+        g["logs"].clear()
+        g["income"] = 0
+        g["expense"] = 0
+        await update.message.reply_text(render_bill(chat_id, user))
         return
 
-    # handle + / -
-    if raw.startswith(("+", "-")):
-        try:
-            val = float(raw)
-            if val == 0:
-                g["rows"] = []
-            else:
-                if g["rate"] is None:
-                    await update.message.reply_text("⚠️ Chưa đặt tỷ giá")
-                    return
-                g["rows"].append(val)
-            await render_bill(update, g)
-        except:
-            pass
+    # ---- PLUS ----
+    if text.startswith("+"):
+        if g["rate"] is None:
+            await update.message.reply_text(
+                "⚠️ Chưa đặt tỷ giá" if g["lang"] == "VN" else "⚠️ 尚未设置汇率"
+            )
+            return
 
+        vnd = float(text[1:])
+        usdt = round(vnd / g["rate"], 2)
+        time = datetime.now(TZ_VN).strftime("%H:%M")
 
-# ===== RENDER BILL =====
-async def render_bill(update: Update, g):
-    rate = g["rate"]
-    fee = g["fee"]
-    rows = g["rows"]
+        g["income"] += usdt
+        g["logs"].append(f"• {time}  {vnd} / {g['rate']} = {usdt} USDT")
 
-    total_in = 0.0
-    total_out = 0.0
-    lines = []
+        await update.message.reply_text(render_bill(chat_id, user))
+        return
 
-    for v in rows:
-        usdt = abs(v) / rate
-        t = datetime.now().strftime("%H:%M")
-        if v > 0:
-            total_in += usdt
-            lines.append(f"{t}  {int(v)} / {rate} = {round(usdt,2)} USDT")
-        else:
-            total_out += usdt
-            lines.append(f"{t}  -{int(abs(v))} USDT")
+    # ---- MINUS ----
+    if text.startswith("-"):
+        usdt = abs(float(text))
+        time = datetime.now(TZ_VN).strftime("%H:%M")
 
-    balance = total_in - total_out
-    fee_value = balance * fee / 100 if fee > 0 else 0
-    balance_after = balance - fee_value
+        g["expense"] += usdt
+        g["logs"].append(f"• {time}  -{usdt} USDT")
 
-    now = datetime.now().strftime("%d/%m/%Y – %H:%M")
+        await update.message.reply_text(render_bill(chat_id, user))
+        return
 
-    if g["lang"] == "VN":
-        msg = [
-            "🧾 HÓA ĐƠN",
-            f"👤 Người tạo: TianLong",
-            f"🕒 Thời gian: {now}",
-            "",
-        ]
-    else:
-        msg = [
-            "🧾 账单",
-            f"👤 创建者: TianLong",
-            f"🕒 时间: {now}",
-            "",
-        ]
+# ====== COMMANDS ======
+async def set_lang_vn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    get_group(update.effective_chat.id)["lang"] = "VN"
+    await update.message.reply_text("🇻🇳 Đã chuyển tiếng Việt")
 
-    if lines:
-        msg += lines
-    else:
-        msg.append("📭 Chưa có giao dịch nào được thực hiện")
+async def set_lang_cn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    get_group(update.effective_chat.id)["lang"] = "CN"
+    await update.message.reply_text("🇨🇳 已切换中文")
 
-    msg.append("")
+# ====== RUN ======
+app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    if fee > 0:
-        msg.append(f"💰 Phí: {fee}%")
+app.add_handler(CommandHandler("vn", set_lang_vn))
+app.add_handler(CommandHandler("cn", set_lang_cn))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    msg += [
-        "⸻",
-        f"📥 Tổng thu: {round(total_in,2)} USDT",
-        f"📤 Tổng chi: {round(total_out,2)} USDT",
-        f"💰 Số dư: {round(balance_after,2)} USDT",
-    ]
-
-    await update.message.reply_text("\n".join(msg))
-
-
-# ===== MAIN =====
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+print("🤖 BOT RUNNING...")
+app.run_polling()
