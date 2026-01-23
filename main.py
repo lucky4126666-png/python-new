@@ -17,9 +17,13 @@ from telegram.ext import (
 
 # ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "7993054192:AAEMYvFa_WG-_XuT4RkeW_qUNtVO-P-vy_c"
-SUPER_ADMINS = {8572604188}   # 👈 ID CHỦ BOT
+SUPER_ADMINS = {
+    8572604188,   # chủ bot
+    5493266423,   # admin 1
+    5922181492    # admin 2
+}
+GROUP_ADMINS = {}            # admin theo group
 groups = {}
-GROUP_ADMINS = {}   # {gid: set(user_id)}
 
 # ================= TIME =================
 def tz_vn():
@@ -33,7 +37,7 @@ def now_time():
 
 # ================= PERMISSION =================
 def is_admin(uid, gid):
-    return uid in GROUP_ADMINS.get(gid, set())
+    return uid in SUPER_ADMINS or uid in GROUP_ADMINS.get(gid, set())
 
 # ================= TEXT =================
 MAIN_MENU_TEXT = (
@@ -136,7 +140,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     gid = update.effective_chat.id
 
-    GROUP_ADMINS.setdefault(gid, set()).add(uid)  # người đầu tiên auto admin
+    if not is_admin(uid, gid):
+        return
 
     await update.message.reply_text(
         MAIN_MENU_TEXT,
@@ -150,7 +155,6 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     uid = q.from_user.id
     gid = q.message.chat.id
-
     if not is_admin(uid, gid):
         return
 
@@ -161,12 +165,12 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(ADMIN_MENU_TEXT, reply_markup=admin_menu_kb())
 
     elif q.data == "add_admin":
-        context.user_data["wait_add_admin"] = True
-        await q.message.reply_text("👤 Gửi ID admin cần thêm:")
+        GROUP_ADMINS.setdefault(gid, set()).add(uid)
+        await q.edit_message_text("✅ Đã thêm admin", reply_markup=admin_menu_kb())
 
     elif q.data == "remove_admin":
-        context.user_data["wait_remove_admin"] = True
-        await q.message.reply_text("👤 Gửi ID admin cần xoá:")
+        GROUP_ADMINS.get(gid, set()).discard(uid)
+        await q.edit_message_text("❌ Đã xóa admin", reply_markup=admin_menu_kb())
 
     elif q.data == "list_admin":
         lst = GROUP_ADMINS.get(gid, set())
@@ -189,33 +193,22 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(uid, gid):
         return
 
-    groups.setdefault(gid, {
-        "rate": 1.0,
-        "fee": 0.0,
-        "lang": "VN",
-        "inputs": [],
-        "outputs": []
-    })
+    if gid not in groups:
+        groups[gid] = {
+            "rate": 1.0,
+            "fee": 0.0,
+            "lang": "VN",
+            "inputs": [],
+            "outputs": []
+        }
 
     g = groups[gid]
 
-    # ===== ADMIN ADD / REMOVE =====
-    if context.user_data.get("wait_add_admin"):
-        try:
-            GROUP_ADMINS.setdefault(gid, set()).add(int(msg))
-            await update.message.reply_text("✅ Đã thêm admin")
-        except:
-            await update.message.reply_text("❌ ID không hợp lệ")
-        context.user_data.pop("wait_add_admin")
+    if msg == "⬅️ Quay lại":
+        reset_state(context)
+        await update.message.reply_text("Menu chính", reply_markup=main_menu_kb(True))
         return
 
-    if context.user_data.get("wait_remove_admin"):
-        GROUP_ADMINS.get(gid, set()).discard(int(msg))
-        await update.message.reply_text("❌ Đã xoá admin")
-        context.user_data.pop("wait_remove_admin")
-        return
-
-    # ===== LANGUAGE =====
     if msg.startswith("VN"):
         g["lang"] = "VN"
         await update.message.reply_text("🇻🇳 Đã chuyển Tiếng Việt")
@@ -226,8 +219,8 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🇨🇳 已切换中文")
         return
 
-    # ===== RATE =====
     if msg == "🔢 Tỷ giá":
+        reset_state(context)
         context.user_data["set_rate"] = True
         await update.message.reply_text("Nhập tỷ giá:")
         return
@@ -235,14 +228,14 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("set_rate"):
         try:
             g["rate"] = float(msg)
+            reset_state(context)
             await update.message.reply_text("✅ Đã đặt tỷ giá")
         except:
             await update.message.reply_text("❌ Tỷ giá không hợp lệ")
-        context.user_data.pop("set_rate")
         return
 
-    # ===== FEE =====
     if msg == "💸 Phí %":
+        reset_state(context)
         context.user_data["set_fee"] = True
         await update.message.reply_text("Nhập % phí:")
         return
@@ -250,13 +243,12 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("set_fee"):
         try:
             g["fee"] = float(msg)
+            reset_state(context)
             await update.message.reply_text("✅ Đã đặt phí")
         except:
             await update.message.reply_text("❌ Phí không hợp lệ")
-        context.user_data.pop("set_fee")
         return
 
-    # ===== BILL =====
     if msg in ["+0", "-0"]:
         g["inputs"].clear()
         g["outputs"].clear()
@@ -283,7 +275,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
     print("🐉 TianLong Bot running…")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
