@@ -15,7 +15,7 @@ from telegram.ext import (
 )
 
 # ================= CONFIG =================
-TOKEN = "YOUR_BOT_TOKEN_HERE"
+TOKEN = "7993054192:AAEMYvFa_WG-_XuT4RkeW_qUNtVO-P-vy_c"
 OWNER_ID = 8572604188  # ID của bạn
 
 SUPER_ADMINS = {OWNER_ID}
