@@ -1,227 +1,281 @@
 import os
-import pytz
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
     ContextTypes,
+    MessageHandler,
+    CommandHandler,
     filters
 )
 
-# ========= CONFIG =========
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-BOT_OWNER_ID = int(os.getenv("OWNER_ID", "0"))
-VN_TZ = pytz.timezone("Asia/Ho_Chi_Minh")
+# ================= CONFIG =================
+BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
+OWNER_ID = 123456789  # 👈 ID chủ bot (BẮT BUỘC SỬA)
 
-if not BOT_TOKEN or not BOT_OWNER_ID:
-    raise RuntimeError("Missing BOT_TOKEN or OWNER_ID")
+ADMINS = {OWNER_ID}
+pending_admin_action = {}
 
-# ========= DATA =========
-GROUP_DATA = {}       # chat_id → bill data
-WHITELIST = {}        # chat_id → set(user_id)
-ADMINS = set()        # admin ids (added by owner)
-PENDING = {}          # pending confirm actions
+groups = {}
+# groups[gid] = {
+#   balance, income, expense, fee, rate, lang
+# }
 
-# ========= MENUS =========
+# ================= TIME =================
+def now_vn():
+    tz = timezone(timedelta(hours=7))
+    return datetime.now(tz).strftime("%d/%m/%Y – %H:%M")
+
+# ================= MENUS =================
 MAIN_MENU = ReplyKeyboardMarkup(
-    [["🧮 Máy tính"], ["❌ Đóng"]],
+    [
+        ["📜 Quản lý nhóm"],
+        ["🧮 Máy tính"],
+        ["👑 Admin"],
+        ["❌ Đóng"]
+    ],
     resize_keyboard=True
 )
 
 CALC_MENU = ReplyKeyboardMarkup(
     [
         ["🔢 Tỷ giá", "💸 Phí %"],
-        ["🇻🇳 VN", "🇨🇳 CN"],
+        ["VN | 🇻🇳", "CN | 🇨🇳"],
         ["⬅️ Quay lại"]
     ],
     resize_keyboard=True
 )
 
-OWNER_MENU = ReplyKeyboardMarkup(
+ADMIN_MENU = ReplyKeyboardMarkup(
     [
-        ["➕ Thêm whitelist", "➖ Xóa whitelist"],
+        ["➕ Thêm Admin"],
+        ["➖ Xóa Admin"],
+        ["📋 Danh sách Admin"],
         ["⬅️ Quay lại"]
     ],
     resize_keyboard=True
 )
 
 CONFIRM_MENU = ReplyKeyboardMarkup(
-    [["✅ Xác nhận", "❌ Hủy"]],
+    [
+        ["✅ Xác nhận"],
+        ["❌ Hủy"]
+    ],
     resize_keyboard=True,
     one_time_keyboard=True
 )
 
-# ========= HELPERS =========
-def now_vn():
-    return datetime.now(VN_TZ).strftime("%d/%m/%Y – %H:%M")
+# ================= BILL =================
+def render_bill(name, g):
+    time = now_vn()
 
-def is_allowed(chat_id, uid):
-    return (
-        uid == BOT_OWNER_ID or
-        uid in ADMINS or
-        uid in WHITELIST.get(chat_id, set())
-    )
-
-def init_group(chat_id):
-    GROUP_DATA.setdefault(chat_id, {
-        "rate": None,
-        "fee": 0.0,
-        "in": 0.0,
-        "out": 0.0,
-        "lang": "VN"
-    })
-
-def render_bill(chat_id, creator):
-    d = GROUP_DATA[chat_id]
-    fee_text = f"{d['fee']}%" if d["fee"] > 0 else "0%"
-    balance = d["in"] - d["out"]
-
-    if d["lang"] == "CN":
+    if g["lang"] == "CN":
         return (
-            f"🧾 账单\n\n"
-            f"👤 创建者: {creator}\n"
-            f"🕒 时间: {now_vn()}\n\n"
-            f"📥 收入: {round(d['in'],2)} USDT\n"
-            f"📤 支出: {round(d['out'],2)} USDT\n"
-            f"💸 手续费: {fee_text}\n"
-            f"💰 余额: {round(balance,2)} USDT"
+            f"📄 <b>账单</b>\n\n"
+            f"👤 创建者: {name}\n"
+            f"🕒 时间: {time}\n\n"
+            f"📥 收入: {g['income']:.2f} USDT\n"
+            f"📤 支出: {g['expense']:.2f} USDT\n"
+            f"💸 手续费: {g['fee']}%\n"
+            f"💰 余额: <b>{g['balance']:.2f} USDT</b>"
         )
 
     return (
-        f"🧾 HÓA ĐƠN\n\n"
-        f"👤 Người tạo: {creator}\n"
-        f"🕒 Thời gian: {now_vn()}\n\n"
-        f"📥 Tổng thu: {round(d['in'],2)} USDT\n"
-        f"📤 Tổng chi: {round(d['out'],2)} USDT\n"
-        f"💸 Phí: {fee_text}\n"
-        f"💰 Số dư: {round(balance,2)} USDT"
+        f"🧾 <b>HÓA ĐƠN</b>\n\n"
+        f"👤 Người tạo: {name}\n"
+        f"🕒 Thời gian: {time}\n\n"
+        f"📥 Tổng thu: {g['income']:.2f} USDT\n"
+        f"📤 Tổng chi: {g['expense']:.2f} USDT\n"
+        f"💸 Phí: {g['fee']}%\n"
+        f"💰 Số dư: <b>{g['balance']:.2f} USDT</b>"
     )
 
-# ========= HANDLERS =========
+# ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if uid != BOT_OWNER_ID:
-        return
-    await update.message.reply_text("🤖 BOT SẴN SÀNG", reply_markup=MAIN_MENU)
 
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    uid = msg.from_user.id
-    chat_id = msg.chat_id
-    text = msg.text.strip()
-
-    if not is_allowed(chat_id, uid):
+    if uid not in ADMINS:
         return
 
-    init_group(chat_id)
+    await update.message.reply_text(
+        "🤖 BOT TÍNH BILL",
+        reply_markup=MAIN_MENU
+    )
 
-    # OWNER WHITELIST MENU
-    if uid == BOT_OWNER_ID:
-        if text == "➕ Thêm whitelist":
-            PENDING[uid] = {"action": "add", "chat": chat_id}
-            await msg.reply_text("Gửi ID cần THÊM")
+# ================= HANDLER =================
+async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message.text.strip()
+    user = update.effective_user
+    chat = update.effective_chat
+
+    uid = user.id
+    gid = chat.id
+    name = user.first_name
+
+    # 🔐 ONLY ADMIN
+    if uid not in ADMINS:
+        return
+
+    if gid not in groups:
+        groups[gid] = {
+            "balance": 0.0,
+            "income": 0.0,
+            "expense": 0.0,
+            "fee": 0,
+            "rate": 1,
+            "lang": "VN"
+        }
+
+    g = groups[gid]
+
+    # ===== MAIN MENU =====
+    if msg == "📜 Quản lý nhóm":
+        await update.message.reply_text("📜 Quản lý nhóm")
+        return
+
+    if msg == "🧮 Máy tính":
+        await update.message.reply_text("🧮 Máy tính", reply_markup=CALC_MENU)
+        return
+
+    if msg == "👑 Admin":
+        if uid != OWNER_ID:
             return
-
-        if text == "➖ Xóa whitelist":
-            PENDING[uid] = {"action": "remove", "chat": chat_id}
-            await msg.reply_text("Gửi ID cần XÓA")
-            return
-
-    # CONFIRM
-    if uid in PENDING:
-        p = PENDING[uid]
-        if text.isdigit():
-            p["target"] = int(text)
-            await msg.reply_text("Xác nhận thao tác?", reply_markup=CONFIRM_MENU)
-            return
-
-        if text == "❌ Hủy":
-            PENDING.pop(uid)
-            await msg.reply_text("Đã hủy")
-            return
-
-        if text == "✅ Xác nhận":
-            WHITELIST.setdefault(p["chat"], set())
-            if p["action"] == "add":
-                WHITELIST[p["chat"]].add(p["target"])
-                await msg.reply_text("Đã thêm whitelist")
-            else:
-                WHITELIST[p["chat"]].discard(p["target"])
-                await msg.reply_text("Đã xóa whitelist")
-            PENDING.pop(uid)
-            return
-
-    d = GROUP_DATA[chat_id]
-
-    # MENUS
-    if text == "🧮 Máy tính":
-        await msg.reply_text("Menu máy tính", reply_markup=CALC_MENU)
+        await update.message.reply_text("👑 Quản lý Admin", reply_markup=ADMIN_MENU)
         return
 
-    if text == "⬅️ Quay lại":
-        if uid == BOT_OWNER_ID:
-            await msg.reply_text("Menu", reply_markup=MAIN_MENU)
+    if msg == "❌ Đóng":
+        await update.message.reply_text("❌ Đã đóng menu", reply_markup=None)
         return
 
-    if text == "❌ Đóng":
-        await msg.reply_text("Đã đóng menu")
+    # ===== BACK =====
+    if msg == "⬅️ Quay lại":
+        await update.message.reply_text("⬅️ Menu chính", reply_markup=MAIN_MENU)
         return
 
-    # SETTINGS
-    if text == "🔢 Tỷ giá":
-        await msg.reply_text("Nhập tỷ giá")
-        context.user_data["set"] = "rate"
+    # ===== LANGUAGE =====
+    if msg.startswith("VN"):
+        g["lang"] = "VN"
+        await update.message.reply_text("🇻🇳 Đã chuyển Tiếng Việt")
         return
 
-    if text == "💸 Phí %":
-        await msg.reply_text("Nhập phí %")
-        context.user_data["set"] = "fee"
+    if msg.startswith("CN"):
+        g["lang"] = "CN"
+        await update.message.reply_text("🇨🇳 已切换中文")
         return
 
-    if text == "🇻🇳 VN":
-        d["lang"] = "VN"
-        await msg.reply_text("Đã chuyển VN")
+    # ===== RATE =====
+    if msg == "🔢 Tỷ giá":
+        context.user_data["set_rate"] = True
+        await update.message.reply_text("Nhập tỷ giá:")
         return
 
-    if text == "🇨🇳 CN":
-        d["lang"] = "CN"
-        await msg.reply_text("已切换中文")
+    if context.user_data.get("set_rate"):
+        try:
+            g["rate"] = float(msg)
+            context.user_data["set_rate"] = False
+            await update.message.reply_text("✅ Đã đặt tỷ giá")
+        except:
+            await update.message.reply_text("❌ Tỷ giá không hợp lệ")
         return
 
-    # INPUT NUMBER
-    if context.user_data.get("set") == "rate":
-        d["rate"] = float(text)
-        context.user_data.clear()
-        await msg.reply_text("Đã đặt tỷ giá")
+    # ===== FEE =====
+    if msg == "💸 Phí %":
+        context.user_data["set_fee"] = True
+        await update.message.reply_text("Nhập % phí:")
         return
 
-    if context.user_data.get("set") == "fee":
-        d["fee"] = float(text)
-        context.user_data.clear()
-        await msg.reply_text("Đã đặt phí")
+    if context.user_data.get("set_fee"):
+        try:
+            g["fee"] = int(msg)
+            context.user_data["set_fee"] = False
+            await update.message.reply_text("✅ Đã đặt phí")
+        except:
+            await update.message.reply_text("❌ Phí không hợp lệ")
         return
 
-    # TRANSACTION
-    if text.startswith(("+", "-")):
-        if text in ("+0", "-0"):
-            d["in"] = d["out"] = 0
+    # ===== RESET =====
+    if msg in ["+0", "-0"]:
+        g["balance"] = 0
+        g["income"] = 0
+        g["expense"] = 0
+        await update.message.reply_text(render_bill(name, g), parse_mode="HTML")
+        return
+
+    # ===== ADD / SUB =====
+    if msg.startswith("+"):
+        try:
+            vnd = float(msg[1:])
+            usdt = vnd / g["rate"]
+            g["income"] += usdt
+            g["balance"] += usdt
+            await update.message.reply_text(render_bill(name, g), parse_mode="HTML")
+        except:
+            pass
+        return
+
+    if msg.startswith("-"):
+        try:
+            vnd = float(msg[1:])
+            usdt = vnd / g["rate"]
+            g["expense"] += usdt
+            g["balance"] -= usdt
+            await update.message.reply_text(render_bill(name, g), parse_mode="HTML")
+        except:
+            pass
+        return
+
+    # ===== ADMIN PANEL =====
+    if uid == OWNER_ID and msg == "➕ Thêm Admin":
+        pending_admin_action[uid] = {"action": "add"}
+        await update.message.reply_text("Gửi ID cần THÊM admin", reply_markup=CONFIRM_MENU)
+        return
+
+    if uid == OWNER_ID and msg == "➖ Xóa Admin":
+        pending_admin_action[uid] = {"action": "remove"}
+        await update.message.reply_text("Gửi ID cần XÓA admin", reply_markup=CONFIRM_MENU)
+        return
+
+    if uid == OWNER_ID and msg == "📋 Danh sách Admin":
+        text = "👑 DANH SÁCH ADMIN\n\n"
+        for a in ADMINS:
+            text += f"• {a}\n"
+        await update.message.reply_text(text)
+        return
+
+    if uid == OWNER_ID and uid in pending_admin_action and msg.isdigit():
+        pending_admin_action[uid]["target"] = int(msg)
+        await update.message.reply_text("⚠️ Xác nhận thao tác?", reply_markup=CONFIRM_MENU)
+        return
+
+    if uid == OWNER_ID and msg == "✅ Xác nhận":
+        action = pending_admin_action[uid]["action"]
+        target = pending_admin_action[uid]["target"]
+
+        if action == "add":
+            ADMINS.add(target)
+            text = "✅ Đã thêm Admin"
         else:
-            amount = float(text[1:]) / d["rate"]
-            if text.startswith("+"):
-                d["in"] += amount
+            if target != OWNER_ID:
+                ADMINS.discard(target)
+                text = "✅ Đã xóa Admin"
             else:
-                d["out"] += amount
+                text = "❌ Không thể xóa OWNER"
 
-        await msg.reply_text(render_bill(chat_id, msg.from_user.first_name))
+        pending_admin_action.pop(uid)
+        await update.message.reply_text(text, reply_markup=ADMIN_MENU)
         return
 
-# ========= RUN =========
+    if uid == OWNER_ID and msg == "❌ Hủy":
+        pending_admin_action.pop(uid, None)
+        await update.message.reply_text("❌ Đã hủy", reply_markup=ADMIN_MENU)
+        return
+
+# ================= MAIN =================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
     app.run_polling()
 
 if __name__ == "__main__":
