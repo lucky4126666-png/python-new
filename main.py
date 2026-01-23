@@ -12,7 +12,7 @@ from telegram.ext import (
 
 # ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
-OWNER_ID = 123456789  # 👈 ID chủ bot (BẮT BUỘC SỬA)
+OWNER_ID = 8572604188  # 👈 ID chủ bot (BẮT BUỘC SỬA)
 
 ADMINS = {OWNER_ID}
 pending_admin_action = {}
