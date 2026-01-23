@@ -5,7 +5,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, Comma
 
 # ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
-OWNER_ID = 123456789  # 👈 SỬA ID CHỦ BOT
+OWNER_ID = 8572604188  # 👈 SỬA ID CHỦ BOT
 
 ADMINS = {OWNER_ID}
 pending_admin_action = {}
