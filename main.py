@@ -1,13 +1,25 @@
 import os
 from datetime import datetime, timezone, timedelta
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup
+)
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
 
 # ================= CONFIG =================
-BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
-OWNER_ID = 8572604188  # 👈 SỬA ID CHỦ BOT
-ADMINS = {OWNER_ID}
+TOKEN = "YOUR_BOT_TOKEN_HERE"
+OWNER_ID = 8572604188  # ID của bạn
 
+SUPER_ADMINS = {OWNER_ID}
+GROUP_ADMINS = {}
 groups = {}
 
 # ================= TIME =================
@@ -20,60 +32,39 @@ def today():
 def now_time():
     return datetime.now(tz_vn()).strftime("%H:%M")
 
-# ================= MENUS =================
-MAIN_MENU = ReplyKeyboardMarkup(
-    [
-        ["📜 Quản lý nhóm"],
-        ["🧮 Máy tính"],
-        ["👑 Admin"],
-        ["❌ Đóng"]
-    ],
-    resize_keyboard=True
+# ================= ADMIN =================
+def is_admin(uid, gid):
+    return uid in SUPER_ADMINS or uid in GROUP_ADMINS.get(gid, set())
+
+# ================= MENU =================
+MAIN_MENU_TEXT = (
+    "━━━━━━━━━━━━━━━━━━\n"
+    "🐉  TIANLONG BOT\n"
+    "━━━━━━━━━━━━━━━━━━\n\n"
+    "📌 MENU CHÍNH"
 )
 
-CALC_MENU = ReplyKeyboardMarkup(
-    [
-        ["🔢 Tỷ giá", "💸 Phí %"],
-        ["VN | 🇻🇳", "CN | 🇨🇳"],
-        ["⬅️ Quay lại"]
-    ],
-    resize_keyboard=True
-)
+def main_menu_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📂 Quản lý nhóm", callback_data="group")],
+        [InlineKeyboardButton("🧮 Máy tính", callback_data="calc")],
+        [InlineKeyboardButton("👑 Admin", callback_data="admin")],
+        [InlineKeyboardButton("❌ Đóng", callback_data="close")]
+    ])
 
-# ================= STATE =================
-def reset_state(context):
-    context.user_data.pop("set_rate", None)
-    context.user_data.pop("set_fee", None)
+def admin_menu_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Thêm Admin", callback_data="add_admin")],
+        [InlineKeyboardButton("➖ Xóa Admin", callback_data="remove_admin")],
+        [InlineKeyboardButton("⬅️ Quay lại", callback_data="back")]
+    ])
 
 # ================= BILL =================
 def render_bill(name, g):
-    total_in = sum(i["usdt"] for i in g["inputs"])
-    total_out = sum(o["usdt"] for o in g["outputs"])
-    total = total_in - total_out
+    tin = sum(i["usdt"] for i in g["inputs"])
+    tout = sum(o["usdt"] for o in g["outputs"])
+    total = tin - tout
 
-    if g["lang"] == "CN":
-        lines = [
-            f"🧾 账单 | {today()}",
-            f"👤 创建者: {name}",
-            "⸻",
-            f"收入 ({len(g['inputs'])})"
-        ]
-        for i in g["inputs"]:
-            lines.append(f"{i['time']} | {i['vnd']:,.0f} / {g['rate']} = {i['usdt']:,.2f} USDT")
-
-        lines += ["⸻", f"支出 ({len(g['outputs'])})"]
-        for o in g["outputs"]:
-            lines.append(f"-{o['usdt']:,.2f} USDT")
-
-        lines += [
-            "⸻",
-            f"+ 收入 : {total_in:,.2f} USDT",
-            f"- 支出 : {total_out:,.2f} USDT",
-            f"💰 总计 : <b>{total:,.2f} USDT</b>"
-        ]
-        return "\n".join(lines)
-
-    # VN
     lines = [
         f"🧾 HÓA ĐƠN | {today()}",
         f"👤 Người tạo: {name}",
@@ -89,142 +80,90 @@ def render_bill(name, g):
 
     lines += [
         "⸻",
-        f"+ Nhập : {total_in:,.2f} USDT",
-        f"- Xuất : {total_out:,.2f} USDT",
+        f"+ Nhập : {tin:,.2f} USDT",
+        f"- Xuất : {tout:,.2f} USDT",
         f"💰 Tổng cộng : <b>{total:,.2f} USDT</b>"
     ]
     return "\n".join(lines)
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMINS:
+    if not is_admin(update.effective_user.id, update.effective_chat.id):
         return
-    await update.message.reply_text("Menu chính", reply_markup=MAIN_MENU)
+    await update.message.reply_text(
+        MAIN_MENU_TEXT,
+        reply_markup=main_menu_kb()
+    )
 
-# ================= HANDLER =================
-async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message.text.strip()
-    uid = update.effective_user.id
-    gid = update.effective_chat.id
-    name = update.effective_user.first_name
+# ================= CALLBACK =================
+async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
 
-    # 🔒 Không phải admin → im lặng
-    if uid not in ADMINS:
+    uid = q.from_user.id
+    gid = q.message.chat.id
+
+    if not is_admin(uid, gid):
         return
 
     if gid not in groups:
         groups[gid] = {
-            "rate": 1.0,
-            "fee": 0.0,
-            "lang": "VN",
+            "rate": 38.77,
             "inputs": [],
             "outputs": []
         }
 
     g = groups[gid]
 
-    # ===== MENU =====
-    if msg == "🧮 Máy tính":
-        reset_state(context)
-        await update.message.reply_text("🧮 Máy tính", reply_markup=CALC_MENU)
+    if q.data == "admin":
+        await q.edit_message_text("👑 ADMIN MENU", reply_markup=admin_menu_kb())
+
+    elif q.data == "add_admin":
+        GROUP_ADMINS.setdefault(gid, set()).add(uid)
+        await q.answer("Đã thêm admin")
+
+    elif q.data == "remove_admin":
+        GROUP_ADMINS.get(gid, set()).discard(uid)
+        await q.answer("Đã xóa admin")
+
+    elif q.data == "calc":
+        await q.edit_message_text("🧮 Nhập +VND hoặc -USDT")
+
+    elif q.data == "back":
+        await q.edit_message_text(MAIN_MENU_TEXT, reply_markup=main_menu_kb())
+
+    elif q.data == "close":
+        await q.message.delete()
+
+# ================= MESSAGE =================
+async def message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    gid = update.effective_chat.id
+
+    if not is_admin(uid, gid):
         return
 
-    if msg == "⬅️ Quay lại":
-        reset_state(context)
-        await update.message.reply_text("Menu chính", reply_markup=MAIN_MENU)
-        return
+    msg = update.message.text.strip()
+    g = groups.setdefault(gid, {"rate": 38.77, "inputs": [], "outputs": []})
 
-    if msg == "❌ Đóng":
-        reset_state(context)
-        await update.message.reply_text("Đã đóng", reply_markup=None)
-        return
-
-    # ===== LANGUAGE =====
-    if msg.startswith("VN"):
-        g["lang"] = "VN"
-        await update.message.reply_text("Đã chuyển Tiếng Việt")
-        return
-
-    if msg.startswith("CN"):
-        g["lang"] = "CN"
-        await update.message.reply_text("已切换中文")
-        return
-
-    # ===== RATE =====
-    if msg == "🔢 Tỷ giá":
-        reset_state(context)
-        context.user_data["set_rate"] = True
-        await update.message.reply_text("Nhập tỷ giá:")
-        return
-
-    if context.user_data.get("set_rate"):
-        try:
-            rate = float(msg)
-            if rate <= 0:
-                raise ValueError
-            g["rate"] = rate
-            reset_state(context)
-            await update.message.reply_text("✅ Đã đặt tỷ giá")
-        except:
-            await update.message.reply_text("❌ Tỷ giá không hợp lệ")
-        return
-
-    # ===== FEE =====
-    if msg == "💸 Phí %":
-        reset_state(context)
-        context.user_data["set_fee"] = True
-        await update.message.reply_text("Nhập % phí:")
-        return
-
-    if context.user_data.get("set_fee"):
-        try:
-            fee = float(msg)
-            if fee < 0:
-                raise ValueError
-            g["fee"] = fee
-            reset_state(context)
-            await update.message.reply_text("✅ Đã đặt phí")
-        except:
-            await update.message.reply_text("❌ Phí không hợp lệ")
-        return
-
-    # ===== RESET =====
-    if msg in ["+0", "-0"]:
-        g["inputs"].clear()
-        g["outputs"].clear()
-        await update.message.reply_text(render_bill(name, g), parse_mode="HTML")
-        return
-
-    # ===== INPUT =====
     if msg.startswith("+"):
-        try:
-            vnd = float(msg[1:])
-            usdt = round(vnd / g["rate"], 2)
-            g["inputs"].append({
-                "time": now_time(),
-                "vnd": vnd,
-                "usdt": usdt
-            })
-            await update.message.reply_text(render_bill(name, g), parse_mode="HTML")
-        except:
-            pass
-        return
+        vnd = float(msg[1:])
+        usdt = round(vnd / g["rate"], 2)
+        g["inputs"].append({"time": now_time(), "vnd": vnd, "usdt": usdt})
+        await update.message.reply_text(render_bill(update.effective_user.first_name, g), parse_mode="HTML")
 
-    # ===== OUTPUT =====
-    if msg.startswith("-"):
-        try:
-            usdt = float(msg[1:])
-            g["outputs"].append({"usdt": round(usdt, 2)})
-            await update.message.reply_text(render_bill(name, g), parse_mode="HTML")
-        except:
-            pass
-        return
+    elif msg.startswith("-"):
+        usdt = float(msg[1:])
+        g["outputs"].append({"usdt": usdt})
+        await update.message.reply_text(render_bill(update.effective_user.first_name, g), parse_mode="HTML")
 
-# ================= MAIN =================
+# ================= RUN =================
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
+    app.add_handler(CallbackQueryHandler(callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message))
+    print("🐉 TianLong Bot RUNNING")
     app.run_polling()
 
 if __name__ == "__main__":
