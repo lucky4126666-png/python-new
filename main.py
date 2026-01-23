@@ -145,40 +145,78 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ================= CALLBACK =================
-async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+  async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-
     uid = q.from_user.id
     gid = q.message.chat.id
+    data = q.data
+
     if not is_admin(uid, gid):
         return
 
-    if q.data == "calc":
+    if data == "admin_menu":
+        await q.edit_message_text("👑 ADMIN MENU", reply_markup=admin_menu_keyboard())
+
+    elif data == "add_admin":
+        if uid != OWNER_ID:
+            await q.edit_message_text("❌ Chỉ chủ bot mới được thêm admin")
+            return
+        context.user_data["await_add_admin"] = True
+        await q.message.reply_text("📥 Nhập USER ID cần thêm admin:")
+
+    elif data == "remove_admin":
+        if uid != OWNER_ID:
+            await q.edit_message_text("❌ Chỉ chủ bot mới được xóa admin")
+            return
+        context.user_data["await_remove_admin"] = True
+        await q.message.reply_text("📥 Nhập USER ID cần xóa admin:")
+
+    elif data == "list_admin":
+        admins = ADMINS.union(GROUP_ADMINS.get(gid, set()))
+        text = "📋 ADMIN LIST\n\n" + "\n".join(str(a) for a in admins)
+        await q.edit_message_text(text, reply_markup=admin_menu_keyboard())
+
+    elif data == "back_main":
+        await q.edit_message_text(MAIN_MENU_TEXT, reply_markup=main_menu_keyboard())
+
+    elif data == "calc":
         await q.message.reply_text("🧮 Máy tính", reply_markup=CALC_MENU)
 
-    elif q.data == "admin":
-        await q.edit_message_text(ADMIN_MENU_TEXT, reply_markup=admin_menu_kb())
+    elif data == "close":
+        await q.message.delete()
 
-    elif q.data == "add_admin":
-        GROUP_ADMINS.setdefault(gid, set()).add(uid)
-        await q.edit_message_text("✅ Đã thêm admin", reply_markup=admin_menu_kb())
+# ================= MESSAGE =================
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message.text.strip()
+    uid = update.effective_user.id
+    gid = update.effective_chat.id
+    name = update.effective_user.first_name
 
-    elif q.data == "remove_admin":
-        GROUP_ADMINS.get(gid, set()).discard(uid)
-        await q.edit_message_text("❌ Đã xóa admin", reply_markup=admin_menu_kb())
+    if not is_admin(uid, gid):
+        return
 
-    elif q.data == "list_admin":
-        lst = GROUP_ADMINS.get(gid, set())
-        txt = "📋 ADMIN\n\n" + ("\n".join(map(str, lst)) if lst else "Chưa có")
-        await q.edit_message_text(txt, reply_markup=admin_menu_kb())
+    # ===== ADD ADMIN =====
+    if context.user_data.get("await_add_admin"):
+        try:
+            aid = int(msg)
+            ADMINS.add(aid)
+            context.user_data.clear()
+            await update.message.reply_text("✅ Đã thêm admin")
+        except:
+            await update.message.reply_text("❌ ID không hợp lệ")
+        return
 
-    elif q.data == "back":
-        await q.edit_message_text(MAIN_MENU_TEXT, reply_markup=main_menu_kb(True))
-
-    elif q.data == "close":
-        await q.delete_message()
-
+    if context.user_data.get("await_remove_admin"):
+        try:
+            rid = int(msg)
+            ADMINS.discard(rid)
+            context.user_data.clear()
+            await update.message.reply_text("✅ Đã xóa admin")
+        except:
+            await update.message.reply_text("❌ ID không hợp lệ")
+        return
 # ================= MESSAGE =================
 async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.text.strip()
