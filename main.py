@@ -14,15 +14,14 @@ from telegram.ext import (
     filters
 )
 
-# ================== CONFIG ==================
+# ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
 
-SUPER_ADMINS = {8572604188}  # chủ bot
-GROUP_ADMINS = {}           # {gid: set(uid)}
+SUPER_ADMINS = {8572604188}
+GROUP_ADMINS = {}          # {gid: set(uid)}
+groups = {}                # data theo chat
 
-groups = {}  # data theo group / private
-
-# ================== TIME ==================
+# ================= TIME =================
 def tz_vn():
     return timezone(timedelta(hours=7))
 
@@ -32,11 +31,11 @@ def today():
 def now_time():
     return datetime.now(tz_vn()).strftime("%H:%M")
 
-# ================== PERMISSION ==================
+# ================= PERMISSION =================
 def is_admin(uid, gid):
     return uid in SUPER_ADMINS or uid in GROUP_ADMINS.get(gid, set())
 
-# ================== LANGUAGE ==================
+# ================= LANGUAGE =================
 LANG = {
     "VN": {
         "menu": "📌 MENU MÁY TÍNH",
@@ -45,7 +44,6 @@ LANG = {
         "bill": "📄 Xem bill",
         "reset": "♻ Reset",
         "admin": "👑 Phân quyền",
-        "back": "⬅️ Quay lại",
         "exit": "❌ Thoát",
         "creator": "Người tạo",
         "input": "Nhập",
@@ -61,7 +59,6 @@ LANG = {
         "bill": "📄 查看账单",
         "reset": "♻ 重置",
         "admin": "👑 权限",
-        "back": "⬅️ 返回",
         "exit": "❌ 关闭",
         "creator": "创建者",
         "input": "收入",
@@ -75,7 +72,7 @@ LANG = {
 def t(g, key):
     return LANG[g["lang"]][key]
 
-# ================== KEYBOARD ==================
+# ================= KEYBOARD =================
 def main_menu(g):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(t(g,"rate"), callback_data="rate"),
@@ -92,40 +89,46 @@ def admin_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin"),
          InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin")],
-        [InlineKeyboardButton("📋 List Admin", callback_data="list_admin")],
-        [InlineKeyboardButton("⬅️ Back", callback_data="back")]
+        [InlineKeyboardButton("📋 List Admin", callback_data="list_admin")]
     ])
 
-# ================== BILL ==================
+# ================= BILL =================
 def render_bill(g, name):
     total_in = sum(i["usdt"] for i in g["inputs"])
     total_out = sum(o["usdt"] for o in g["outputs"])
-    total = total_in - total_out
+
+    fee_usdt = round(total_in * g["fee"] / 100, 2)
+    total = total_in - fee_usdt - total_out
 
     lines = [
-        f"🧾 {today()}",
+        f"🧾 HÓA ĐƠN | {today()}",
         f"👤 {t(g,'creator')}: {name}",
         "⸻",
         f"{t(g,'input')} ({len(g['inputs'])})"
     ]
 
     for i in g["inputs"]:
-        lines.append(f"{i['time']} | {i['usdt']:,.2f} USDT")
+        lines.append(
+            f"{i['time']} | {i['vnd']:,.0f} / {i['rate']} = {i['usdt']:,.2f} USDT"
+        )
 
     lines += ["⸻", f"{t(g,'output')} ({len(g['outputs'])})"]
 
     for o in g["outputs"]:
         lines.append(f"-{o['usdt']:,.2f} USDT")
 
-    lines += [
-        "⸻",
-        f"+ {t(g,'input')} : {total_in:,.2f} USDT",
-        f"- {t(g,'output')} : {total_out:,.2f} USDT",
-        f"💰 {t(g,'total')} : <b>{total:,.2f} USDT</b>"
-    ]
+    lines.append("⸻")
+    lines.append(f"+ {t(g,'input')} : {total_in:,.2f} USDT")
+
+    if g["fee"] > 0:
+        lines.append(f"💸 Phí nhập ({g['fee']}%) : {fee_usdt:,.2f} USDT")
+
+    lines.append(f"- {t(g,'output')} : {total_out:,.2f} USDT")
+    lines.append(f"💰 {t(g,'total')} : <b>{total:,.2f} USDT</b>")
+
     return "\n".join(lines)
 
-# ================== START ==================
+# ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     gid = update.effective_chat.id
@@ -146,7 +149,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu(groups[gid])
     )
 
-# ================== CALLBACK ==================
+# ================= CALLBACK =================
 async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -174,7 +177,10 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(t(g,"set_fee"))
 
     elif q.data == "bill":
-        await q.message.reply_text(render_bill(g, q.from_user.first_name), parse_mode="HTML")
+        await q.message.reply_text(
+            render_bill(g, q.from_user.first_name),
+            parse_mode="HTML"
+        )
 
     elif q.data == "reset":
         g["inputs"].clear()
@@ -198,7 +204,7 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         target = q.message.reply_to_message.from_user.id
         GROUP_ADMINS.setdefault(gid, set()).add(target)
-        await q.message.reply_text(f"✅ Đã thêm admin {target}")
+        await q.message.reply_text("✅ Đã thêm admin")
 
     elif q.data == "remove_admin":
         if not q.message.reply_to_message:
@@ -206,7 +212,7 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         target = q.message.reply_to_message.from_user.id
         GROUP_ADMINS.get(gid, set()).discard(target)
-        await q.message.reply_text(f"❌ Đã xóa admin {target}")
+        await q.message.reply_text("❌ Đã xóa admin")
 
     elif q.data == "list_admin":
         admins = GROUP_ADMINS.get(gid, set())
@@ -214,13 +220,10 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         txt += "\n".join(str(i) for i in admins) if admins else "Chưa có"
         await q.message.reply_text(txt)
 
-    elif q.data == "back":
-        await q.message.reply_text(t(g,"menu"), reply_markup=main_menu(g))
-
     elif q.data == "exit":
         await q.message.delete()
 
-# ================== MESSAGE ==================
+# ================= MESSAGE =================
 async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.text.strip()
     uid = update.effective_user.id
@@ -251,16 +254,28 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if msg.startswith("+"):
-        usdt = round(float(msg[1:]) / g["rate"], 2)
-        g["inputs"].append({"time": now_time(), "usdt": usdt})
-        await update.message.reply_text(render_bill(g, name), parse_mode="HTML")
+        vnd = float(msg[1:])
+        usdt = round(vnd / g["rate"], 2)
+        g["inputs"].append({
+            "time": now_time(),
+            "vnd": vnd,
+            "rate": g["rate"],
+            "usdt": usdt
+        })
+        await update.message.reply_text(
+            render_bill(g, name),
+            parse_mode="HTML"
+        )
 
     elif msg.startswith("-"):
         usdt = round(float(msg[1:]), 2)
         g["outputs"].append({"usdt": usdt})
-        await update.message.reply_text(render_bill(g, name), parse_mode="HTML")
+        await update.message.reply_text(
+            render_bill(g, name),
+            parse_mode="HTML"
+        )
 
-# ================== RUN ==================
+# ================= RUN =================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
