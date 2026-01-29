@@ -1,11 +1,9 @@
 import os
-import sqlite3
 from datetime import datetime, timezone, timedelta
 from telegram import (
     Update,
     InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    ReplyKeyboardMarkup
+    InlineKeyboardMarkup
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -16,348 +14,259 @@ from telegram.ext import (
     filters
 )
 
-# ================= CONFIG =================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("Missing BOT_TOKEN")
+# ================== CONFIG ==================
+BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
 
-SUPER_ADMINS = {8572604188}   # sửa ID của bạn
-DB = "bill.db"
+SUPER_ADMINS = {8572604188}  # chủ bot
+GROUP_ADMINS = {}           # {gid: set(uid)}
 
-# ================= TIME =================
+groups = {}  # data theo group / private
+
+# ================== TIME ==================
 def tz_vn():
     return timezone(timedelta(hours=7))
 
-def now():
-    return datetime.now(tz_vn())
-
 def today():
-    return now().strftime("%d/%m/%Y")
+    return datetime.now(tz_vn()).strftime("%d/%m/%Y")
 
 def now_time():
-    return now().strftime("%H:%M")
+    return datetime.now(tz_vn()).strftime("%H:%M")
 
-# ================= DATABASE =================
-conn = sqlite3.connect(DB, check_same_thread=False)
-cur = conn.cursor()
+# ================== PERMISSION ==================
+def is_admin(uid, gid):
+    return uid in SUPER_ADMINS or uid in GROUP_ADMINS.get(gid, set())
 
-cur.executescript("""
-CREATE TABLE IF NOT EXISTS group_config (
-    gid INTEGER PRIMARY KEY,
-    rate REAL DEFAULT 1,
-    fee REAL DEFAULT 0,
-    lang TEXT DEFAULT 'VN'
-);
-
-CREATE TABLE IF NOT EXISTS admins (
-    gid INTEGER,
-    uid INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS bill (
-    gid INTEGER,
-    type TEXT,
-    vnd REAL,
-    usdt REAL,
-    time TEXT
-);
-""")
-conn.commit()
-
-# ================= I18N =================
+# ================== LANGUAGE ==================
 LANG = {
     "VN": {
-        "menu": "📌 MENU",
-        "calc": "🧮 Máy tính",
-        "admin": "👑 Quản lý Admin",
-        "close": "❌ Đóng",
-        "back": "⬅️ Quay lại",
-
+        "menu": "📌 MENU MÁY TÍNH",
         "rate": "🔢 Tỷ giá",
         "fee": "💸 Phí %",
-        "in_vnd": "+ Nhập VND",
-        "out_usdt": "- Xuất USDT",
-        "view_bill": "📄 Xem bill",
-        "reset_bill": "♻️ Reset",
-        "exit": "⬅️ Thoát",
-
-        "lang_vn": "🇻🇳 VN",
-        "lang_cn": "🇨🇳 CN",
-
-        "enter_rate": "Nhập tỷ giá:",
-        "enter_fee": "Nhập % phí:",
-        "saved": "✅ Đã cập nhật",
-        "reset_ok": "♻️ Đã reset bill",
-
-        "bill": "🧾 HÓA ĐƠN",
-        "rate_fee": "💱 Tỷ giá: {rate} | Phí: {fee}%",
+        "bill": "📄 Xem bill",
+        "reset": "♻ Reset",
+        "admin": "👑 Phân quyền",
+        "back": "⬅️ Quay lại",
+        "exit": "❌ Thoát",
+        "creator": "Người tạo",
         "input": "Nhập",
         "output": "Xuất",
-        "total": "💰 Tổng cộng",
-
-        "admin_panel": "👑 QUẢN LÝ ADMIN",
-        "add_admin": "➕ Thêm Admin (reply)",
-        "remove_admin": "➖ Xóa Admin (reply)",
-        "need_reply": "⚠️ Vui lòng reply người cần thao tác",
-        "added_admin": "✅ Đã thêm admin",
-        "removed_admin": "❌ Đã xóa admin",
-        "no_permission": "⚠️ Bạn không có quyền"
+        "total": "Tổng cộng",
+        "set_rate": "Nhập tỷ giá:",
+        "set_fee": "Nhập % phí:"
     },
-
     "CN": {
-        "menu": "📌 菜单",
-        "calc": "🧮 计算器",
-        "admin": "👑 管理员管理",
-        "close": "❌ 关闭",
-        "back": "⬅️ 返回",
-
+        "menu": "📌 计算菜单",
         "rate": "🔢 汇率",
         "fee": "💸 手续费 %",
-        "in_vnd": "+ 输入 VND",
-        "out_usdt": "- 支出 USDT",
-        "view_bill": "📄 查看账单",
-        "reset_bill": "♻️ 重置",
-        "exit": "⬅️ 退出",
-
-        "lang_vn": "🇻🇳 越南语",
-        "lang_cn": "🇨🇳 中文",
-
-        "enter_rate": "请输入汇率：",
-        "enter_fee": "请输入手续费 %：",
-        "saved": "✅ 已保存",
-        "reset_ok": "♻️ 已重置账单",
-
-        "bill": "🧾 账单",
-        "rate_fee": "💱 汇率: {rate} | 手续费: {fee}%",
+        "bill": "📄 查看账单",
+        "reset": "♻ 重置",
+        "admin": "👑 权限",
+        "back": "⬅️ 返回",
+        "exit": "❌ 关闭",
+        "creator": "创建者",
         "input": "收入",
         "output": "支出",
-        "total": "💰 总计",
-
-        "admin_panel": "👑 管理员管理",
-        "add_admin": "➕ 添加管理员 (回复)",
-        "remove_admin": "➖ 删除管理员 (回复)",
-        "need_reply": "⚠️ 请回复需要操作的人",
-        "added_admin": "✅ 已添加管理员",
-        "removed_admin": "❌ 已删除管理员",
-        "no_permission": "⚠️ 没有权限"
+        "total": "总计",
+        "set_rate": "输入汇率：",
+        "set_fee": "输入手续费 %："
     }
 }
 
-def get_lang(gid):
-    cur.execute("SELECT lang FROM group_config WHERE gid=?", (gid,))
-    r = cur.fetchone()
-    return r[0] if r else "VN"
+def t(g, key):
+    return LANG[g["lang"]][key]
 
-def t(gid, key, **kwargs):
-    lang = get_lang(gid)
-    text = LANG.get(lang, LANG["VN"]).get(key, key)
-    return text.format(**kwargs)
-
-# ================= PERMISSION =================
-def is_super(uid):
-    return uid in SUPER_ADMINS
-
-def is_admin(uid, gid):
-    cur.execute("SELECT 1 FROM admins WHERE gid=? AND uid=?", (gid, uid))
-    return is_super(uid) or cur.fetchone() is not None
-
-# ================= KEYBOARD =================
-def user_menu(gid):
+# ================== KEYBOARD ==================
+def main_menu(g):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(t(gid,"calc"), callback_data="calc")],
-        [InlineKeyboardButton(t(gid,"close"), callback_data="close")]
+        [InlineKeyboardButton(t(g,"rate"), callback_data="rate"),
+         InlineKeyboardButton(t(g,"fee"), callback_data="fee")],
+        [InlineKeyboardButton(t(g,"bill"), callback_data="bill"),
+         InlineKeyboardButton(t(g,"reset"), callback_data="reset")],
+        [InlineKeyboardButton("🇻🇳 VN", callback_data="lang_vn"),
+         InlineKeyboardButton("🇨🇳 CN", callback_data="lang_cn")],
+        [InlineKeyboardButton(t(g,"admin"), callback_data="admin")],
+        [InlineKeyboardButton(t(g,"exit"), callback_data="exit")]
     ])
 
-def admin_menu(gid):
+def admin_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(t(gid,"calc"), callback_data="calc")],
-        [InlineKeyboardButton(t(gid,"admin"), callback_data="admin")],
-        [InlineKeyboardButton(t(gid,"close"), callback_data="close")]
+        [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin"),
+         InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin")],
+        [InlineKeyboardButton("📋 List Admin", callback_data="list_admin")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="back")]
     ])
 
-def admin_manage_kb(gid):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(t(gid,"add_admin"), callback_data="add_admin")],
-        [InlineKeyboardButton(t(gid,"remove_admin"), callback_data="remove_admin")],
-        [InlineKeyboardButton(t(gid,"back"), callback_data="back")]
-    ])
-
-def calc_kb(gid):
-    return ReplyKeyboardMarkup(
-        [
-            [t(gid,"rate"), t(gid,"fee")],
-            [t(gid,"in_vnd"), t(gid,"out_usdt")],
-            [t(gid,"view_bill"), t(gid,"reset_bill")],
-            [t(gid,"lang_vn"), t(gid,"lang_cn")],
-            [t(gid,"exit")]
-        ],
-        resize_keyboard=True
-    )
-
-# ================= BILL =================
-def render_bill(gid, name):
-    cur.execute("SELECT rate, fee FROM group_config WHERE gid=?", (gid,))
-    rate, fee = cur.fetchone()
-
-    cur.execute("SELECT * FROM bill WHERE gid=?", (gid,))
-    rows = cur.fetchall()
-
-    total_in = sum(r[3] for r in rows if r[1] == "IN")
-    total_out = sum(r[3] for r in rows if r[1] == "OUT")
+# ================== BILL ==================
+def render_bill(g, name):
+    total_in = sum(i["usdt"] for i in g["inputs"])
+    total_out = sum(o["usdt"] for o in g["outputs"])
     total = total_in - total_out
 
     lines = [
-        f"{t(gid,'bill')} | {today()}",
-        f"👤 {name}",
-        t(gid,"rate_fee", rate=rate, fee=fee),
-        "⸻"
+        f"🧾 {today()}",
+        f"👤 {t(g,'creator')}: {name}",
+        "⸻",
+        f"{t(g,'input')} ({len(g['inputs'])})"
     ]
 
-    for r in rows:
-        if r[1] == "IN":
-            lines.append(f"{r[4]} | +{r[2]:,.0f} VND → {r[3]:,.2f} USDT")
-        else:
-            lines.append(f"{r[4]} | -{r[3]:,.2f} USDT")
+    for i in g["inputs"]:
+        lines.append(f"{i['time']} | {i['usdt']:,.2f} USDT")
+
+    lines += ["⸻", f"{t(g,'output')} ({len(g['outputs'])})"]
+
+    for o in g["outputs"]:
+        lines.append(f"-{o['usdt']:,.2f} USDT")
 
     lines += [
         "⸻",
-        f"+ {t(gid,'input')}: {total_in:,.2f} USDT",
-        f"- {t(gid,'output')}: {total_out:,.2f} USDT",
-        f"{t(gid,'total')}: <b>{total:,.2f} USDT</b>"
+        f"+ {t(g,'input')} : {total_in:,.2f} USDT",
+        f"- {t(g,'output')} : {total_out:,.2f} USDT",
+        f"💰 {t(g,'total')} : <b>{total:,.2f} USDT</b>"
     ]
     return "\n".join(lines)
 
-# ================= START =================
-async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+# ================== START ==================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     gid = update.effective_chat.id
 
-    cur.execute("INSERT OR IGNORE INTO group_config(gid) VALUES (?)", (gid,))
-    conn.commit()
+    if not is_admin(uid, gid):
+        return
 
-    kb = admin_menu(gid) if is_admin(uid, gid) else user_menu(gid)
-    await update.message.reply_text(t(gid,"menu"), reply_markup=kb)
+    groups.setdefault(gid, {
+        "rate": 1.0,
+        "fee": 0.0,
+        "lang": "VN",
+        "inputs": [],
+        "outputs": []
+    })
 
-# ================= CALLBACK =================
-async def cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        t(groups[gid],"menu"),
+        reply_markup=main_menu(groups[gid])
+    )
+
+# ================== CALLBACK ==================
+async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    gid = q.message.chat.id
-    uid = q.from_user.id
 
-    if q.data == "calc":
-        await q.message.reply_text(t(gid,"calc"), reply_markup=calc_kb(gid))
+    uid = q.from_user.id
+    gid = q.message.chat.id
+
+    if not is_admin(uid, gid):
+        return
+
+    g = groups.setdefault(gid, {
+        "rate": 1.0,
+        "fee": 0.0,
+        "lang": "VN",
+        "inputs": [],
+        "outputs": []
+    })
+
+    if q.data == "rate":
+        context.user_data["set_rate"] = True
+        await q.message.reply_text(t(g,"set_rate"))
+
+    elif q.data == "fee":
+        context.user_data["set_fee"] = True
+        await q.message.reply_text(t(g,"set_fee"))
+
+    elif q.data == "bill":
+        await q.message.reply_text(render_bill(g, q.from_user.first_name), parse_mode="HTML")
+
+    elif q.data == "reset":
+        g["inputs"].clear()
+        g["outputs"].clear()
+        await q.message.reply_text("✅ Reset xong")
+
+    elif q.data == "lang_vn":
+        g["lang"] = "VN"
+        await q.message.reply_text("🇻🇳 Tiếng Việt")
+
+    elif q.data == "lang_cn":
+        g["lang"] = "CN"
+        await q.message.reply_text("🇨🇳 中文")
 
     elif q.data == "admin":
-        if not is_admin(uid, gid):
-            await q.answer(t(gid,"no_permission"), show_alert=True)
-            return
-        await q.edit_message_text(t(gid,"admin_panel"), reply_markup=admin_manage_kb(gid))
+        await q.message.reply_text("👑 ADMIN", reply_markup=admin_menu())
 
     elif q.data == "add_admin":
         if not q.message.reply_to_message:
-            await q.answer(t(gid,"need_reply"), show_alert=True)
+            await q.answer("Reply người cần cấp quyền", show_alert=True)
             return
         target = q.message.reply_to_message.from_user.id
-        cur.execute("INSERT INTO admins VALUES (?,?)", (gid, target))
-        conn.commit()
-        await q.answer(t(gid,"added_admin"))
+        GROUP_ADMINS.setdefault(gid, set()).add(target)
+        await q.message.reply_text(f"✅ Đã thêm admin {target}")
 
     elif q.data == "remove_admin":
         if not q.message.reply_to_message:
-            await q.answer(t(gid,"need_reply"), show_alert=True)
+            await q.answer("Reply admin cần xóa", show_alert=True)
             return
         target = q.message.reply_to_message.from_user.id
-        cur.execute("DELETE FROM admins WHERE gid=? AND uid=?", (gid, target))
-        conn.commit()
-        await q.answer(t(gid,"removed_admin"))
+        GROUP_ADMINS.get(gid, set()).discard(target)
+        await q.message.reply_text(f"❌ Đã xóa admin {target}")
+
+    elif q.data == "list_admin":
+        admins = GROUP_ADMINS.get(gid, set())
+        txt = "👑 ADMIN LIST\n"
+        txt += "\n".join(str(i) for i in admins) if admins else "Chưa có"
+        await q.message.reply_text(txt)
 
     elif q.data == "back":
-        await q.edit_message_text(t(gid,"menu"), reply_markup=admin_menu(gid))
+        await q.message.reply_text(t(g,"menu"), reply_markup=main_menu(g))
 
-    elif q.data == "close":
-        await q.delete_message()
+    elif q.data == "exit":
+        await q.message.delete()
 
-# ================= MESSAGE =================
-async def msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    gid = update.effective_chat.id
+# ================== MESSAGE ==================
+async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message.text.strip()
     uid = update.effective_user.id
+    gid = update.effective_chat.id
     name = update.effective_user.first_name
 
-    if text == t(gid,"exit"):
-        kb = admin_menu(gid) if is_admin(uid, gid) else user_menu(gid)
-        await update.message.reply_text(t(gid,"menu"), reply_markup=kb)
+    if not is_admin(uid, gid):
         return
 
-    if text == t(gid,"lang_vn"):
-        cur.execute("UPDATE group_config SET lang='VN' WHERE gid=?", (gid,))
-        conn.commit()
-        await update.message.reply_text(t(gid,"menu"), reply_markup=calc_kb(gid))
+    g = groups.setdefault(gid, {
+        "rate": 1.0,
+        "fee": 0.0,
+        "lang": "VN",
+        "inputs": [],
+        "outputs": []
+    })
+
+    if context.user_data.get("set_rate"):
+        g["rate"] = float(msg)
+        context.user_data.clear()
+        await update.message.reply_text("✅ OK")
         return
 
-    if text == t(gid,"lang_cn"):
-        cur.execute("UPDATE group_config SET lang='CN' WHERE gid=?", (gid,))
-        conn.commit()
-        await update.message.reply_text(t(gid,"menu"), reply_markup=calc_kb(gid))
+    if context.user_data.get("set_fee"):
+        g["fee"] = float(msg)
+        context.user_data.clear()
+        await update.message.reply_text("✅ OK")
         return
 
-    if text == t(gid,"rate"):
-        ctx.user_data["set_rate"] = True
-        await update.message.reply_text(t(gid,"enter_rate"))
-        return
+    if msg.startswith("+"):
+        usdt = round(float(msg[1:]) / g["rate"], 2)
+        g["inputs"].append({"time": now_time(), "usdt": usdt})
+        await update.message.reply_text(render_bill(g, name), parse_mode="HTML")
 
-    if ctx.user_data.get("set_rate"):
-        cur.execute("UPDATE group_config SET rate=? WHERE gid=?", (float(text), gid))
-        conn.commit()
-        ctx.user_data.clear()
-        await update.message.reply_text(t(gid,"saved"))
-        return
+    elif msg.startswith("-"):
+        usdt = round(float(msg[1:]), 2)
+        g["outputs"].append({"usdt": usdt})
+        await update.message.reply_text(render_bill(g, name), parse_mode="HTML")
 
-    if text == t(gid,"fee"):
-        ctx.user_data["set_fee"] = True
-        await update.message.reply_text(t(gid,"enter_fee"))
-        return
-
-    if ctx.user_data.get("set_fee"):
-        cur.execute("UPDATE group_config SET fee=? WHERE gid=?", (float(text), gid))
-        conn.commit()
-        ctx.user_data.clear()
-        await update.message.reply_text(t(gid,"saved"))
-        return
-
-    if text.startswith("+"):
-        vnd = float(text[1:])
-        cur.execute("SELECT rate, fee FROM group_config WHERE gid=?", (gid,))
-        rate, fee = cur.fetchone()
-        usdt = (vnd / rate) * (1 - fee / 100)
-        cur.execute("INSERT INTO bill VALUES (?,?,?,?,?)",
-                    (gid, "IN", vnd, round(usdt,2), now_time()))
-        conn.commit()
-        await update.message.reply_text(render_bill(gid,name), parse_mode="HTML")
-
-    if text.startswith("-"):
-        usdt = float(text[1:])
-        cur.execute("INSERT INTO bill VALUES (?,?,?,?,?)",
-                    (gid, "OUT", 0, usdt, now_time()))
-        conn.commit()
-        await update.message.reply_text(render_bill(gid,name), parse_mode="HTML")
-
-    if text == t(gid,"view_bill"):
-        await update.message.reply_text(render_bill(gid,name), parse_mode="HTML")
-
-    if text == t(gid,"reset_bill"):
-        cur.execute("DELETE FROM bill WHERE gid=?", (gid,))
-        conn.commit()
-        await update.message.reply_text(t(gid,"reset_ok"))
-
-# ================= RUN =================
+# ================== RUN ==================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(cb))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg))
-    print("🐉 TIANLONG BILL BOT RUNNING")
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
+    print("🐉 Bot Bill Calculator Running...")
     app.run_polling()
 
 if __name__ == "__main__":
