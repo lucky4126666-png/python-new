@@ -17,7 +17,7 @@ from telegram.ext import (
 # ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
 
-SUPER_ADMINS = {8572604188}
+SUPER_ADMINS = {5493266423}
 GROUP_ADMINS = {}          # {gid: set(uid)}
 groups = {}                # data theo chat
 
